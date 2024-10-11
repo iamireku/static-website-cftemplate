@@ -1,0 +1,118 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template for hosting a static website on Amazon S3 with optional versioning and cross-region replication
+
+Parameters:
+  BucketName:
+    Description: "Name of the S3 bucket to host the static website"
+    Type: String
+    Default: "my-static-website"
+    AllowedPattern: "^[a-z0-9.-]+$"
+    ConstraintDescription: "Bucket name must consist of lowercase letters, numbers, dots, and hyphens."
+  
+  EnableVersioning:
+    Description: "Enable S3 bucket versioning (true/false)"
+    Type: String
+    AllowedValues: [true, false]
+    Default: false
+
+  EnableReplication:
+    Description: "Enable cross-region replication (true/false)"
+    Type: String
+    AllowedValues: [true, false]
+    Default: false
+
+  ReplicationDestinationBucket:
+    Description: "Destination bucket for cross-region replication (required if replication is enabled)"
+    Type: String
+    Default: ""
+    AllowedPattern: "^[a-z0-9.-]*$"
+    ConstraintDescription: "Bucket name must consist of lowercase letters, numbers, dots, and hyphens."
+    Condition: EnableReplicationCondition
+
+  ReplicationDestinationRegion:
+    Description: "AWS region of the destination bucket for cross-region replication"
+    Type: String
+    Default: ""
+    AllowedPattern: "^[a-z0-9-]*$"
+    ConstraintDescription: "Valid AWS region"
+    Condition: EnableReplicationCondition
+
+Conditions:
+  EnableVersioningCondition: !Equals [!Ref EnableVersioning, true]
+  EnableReplicationCondition: !Equals [!Ref EnableReplication, true]
+
+Resources:
+  StaticWebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      AccessControl: PublicRead
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      VersioningConfiguration:
+        Status: !If [EnableVersioningCondition, "Enabled", "Suspended"]
+
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StaticWebsiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "arn:aws:s3:::${StaticWebsiteBucket}/*"
+
+  ReplicationRole:
+    Type: AWS::IAM::Role
+    Condition: EnableReplicationCondition
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "ReplicationPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:GetObjectVersion"
+                  - "s3:GetObjectVersionAcl"
+                  - "s3:GetObjectVersionForReplication"
+                  - "s3:ReplicateObject"
+                  - "s3:ReplicateDelete"
+                  - "s3:ReplicateTags"
+                Resource: !Sub "arn:aws:s3:::${BucketName}/*"
+              - Effect: Allow
+                Action: "s3:ListBucket"
+                Resource: !Sub "arn:aws:s3:::${BucketName}"
+
+  BucketReplicationConfig:
+    Type: AWS::S3::BucketReplicationConfiguration
+    Condition: EnableReplicationCondition
+    Properties:
+      Bucket: !Ref StaticWebsiteBucket
+      ReplicationConfiguration:
+        Role: !GetAtt ReplicationRole.Arn
+        Rules:
+          - Status: Enabled
+            Priority: 1
+            Filter: {}
+            Destination:
+              Bucket: !Sub "arn:aws:s3:::${ReplicationDestinationBucket}"
+              StorageClass: STANDARD
+            SourceSelectionCriteria:
+              SseKmsEncryptedObjects:
+                Status: Disabled
+
+Outputs:
+  WebsiteURL:
+    Description: "URL for static website hosted on S3"
+    Value: !GetAtt StaticWebsiteBucket.WebsiteURL
